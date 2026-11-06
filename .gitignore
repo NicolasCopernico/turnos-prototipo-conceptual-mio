@@ -1,0 +1,23 @@
+# Base de datos local (se regenera al iniciar el backend; INV-03 vale para esta copia, no para el repositorio)
+turnos.db
+turnos.db-*
+*.db
+*.sqlite3
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Secretos y configuración local
+.env
+.env.*
+
+# Sistema operativo y editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
