@@ -1,9 +1,20 @@
 # tareas.md — Tareas por fase para ejecutar [plan.md](plan.md)
 
 Leyenda: `[ ]` pendiente · `[x]` hecho · **Salida** = entregable de la fase · **Hecho cuando** = criterio de cierre.
-Cada fase depende de la anterior. Las referencias (`RN-xx`, `ERR-xx`, `HU-xx`) apuntan a [spec.md](spec.md) y [historias-de-usuario.md](historias-de-usuario.md).
+Cada fase depende de la anterior. Las referencias (`RN-xx`, `INV-xx`, `ERR-xx`, `HU-xx`) apuntan a [spec.md](spec.md) v0.2.1 y [historias-de-usuario.md](historias-de-usuario.md).
+
+Este archivo tiene dos partes:
+
+| Parte | Contenido | Estado |
+|---|---|---|
+| **A — Prototipo conceptual** | Fases 0 a 8 (Fase 1 del curso). Todo en memoria del navegador. | Casi completa; ver [Resumen de la Parte A](#resumen-de-dependencias-parte-a) |
+| **B — Arquitectura desacoplada** | Fases B0 a B6 (Fase 2 del curso). Backend FastAPI y SQLite. Ver [plan.md](plan.md) v2. | No iniciada. [Ir a la Parte B](#parte-b--arquitectura-desacoplada-fase-2-del-curso) |
+
+Las tareas pendientes de la Parte A (1.10, Fase 6, parte de la Fase 7 y 8.2, 8.4) **no bloquean** la Parte B. Los escenarios de la Fase 7 que siguen sin verificar se vuelven a cubrir en B5 contra la API.
 
 ---
+
+# PARTE A — Prototipo conceptual (Fase 1 del curso)
 
 ## Fase 0 — Preparación
 
@@ -142,7 +153,7 @@ Probar en el navegador integrado y registrar el resultado observado:
 
 ---
 
-## Resumen de dependencias
+## Resumen de dependencias (Parte A)
 
 ```
 F0 Preparación → F1 Dominio → F2 Estado → F3 UI compartida → F4 Cliente ┐
@@ -150,3 +161,145 @@ F0 Preparación → F1 Dominio → F2 Estado → F3 UI compartida → F4 Cliente
 ```
 
 F4 y F5 pueden avanzar en paralelo una vez cerrada la Fase 3, porque ambas consumen el mismo `store` y no se tocan entre sí.
+
+---
+
+# PARTE B — Arquitectura desacoplada (Fase 2 del curso)
+
+Base: [plan.md](plan.md) v2.0.1 y [spec.md](spec.md) v0.2.1 (INV-03, §11, criterios 9 a 13, decisiones D-06 a D-09).
+
+**Ramas:** el código del backend (`backend/`) se desarrolla en la rama `backend`; la documentación (`spec.md`, `plan.md`, `tareas.md`, `README.md`) y `index.html` continúan en `main`. Las tareas marcadas `[x]` de B0 a B3 corresponden a código que está en la rama `backend`.
+
+**Reglas de trabajo de esta parte:**
+- **Grounding:** no se crean tablas, campos, endpoints ni códigos de error que no estén en spec §4.1, §7 y §11 (plan §7).
+- **Frontend:** se modifica `index.html` en el lugar; el catálogo, los profesionales y los horarios siguen como datos mock (D-08).
+- **Orden SDD:** si una tarea requiere algo que el spec no dice, se detiene y se actualiza primero el spec.
+- Las referencias a la Parte A («tarea 1.3», etc.) apuntan a código existente en `index.html` que sirve de modelo.
+
+**Decisión del 2026-11-06 — el backend sigue el spec, no los nombres simplificados del pedido de `main.py`.** El pedido original usaba nombres que no figuran en el spec. Se aplican estas equivalencias y **no** se crea nada de la columna izquierda:
+
+| Pedido de `main.py` | Se usa (spec) | Fuente |
+|---|---|---|
+| Tabla `turnos` con `cliente_nombre`, `cliente_email`, `servicio`, `fecha_hora`, `estado` | Tabla `turno` con `cliente_id`, `profesional_id`, `servicio_id`, `inicio`, `fin`, `estado`, …; el nombre y el email del cliente viven en `usuario` | spec §4.1 |
+| `HORARIO_NO_DISPONIBLE` (409) | `SLOT_UNAVAILABLE` (409) | spec §7 |
+| `CANCELACION_FUERA_DE_VENTANA` (409) | `CANCELLATION_WINDOW_EXPIRED` (409) | spec §7 |
+| Estado `CANCELADO_CLIENTE` | `CANCELADO`; quién canceló queda en `cancelado_por_id` | spec §4.1 y RN-06 |
+| `main.py` único | `main.py` más `dominio.py`, `db.py`, `schema.sql` y `seed.py` | plan §5 |
+
+---
+
+## Fase B0 — Preparación
+
+- [x] B0.1 Crear `backend/` con la estructura de plan §5 (`main.py`, `dominio.py`, `db.py`, `schema.sql`, `seed.py`, `tests/`).
+- [x] B0.2 Crear `backend/requirements.txt` con `fastapi`, `uvicorn` y `pytest`, y un entorno virtual local fuera del control de versiones.
+- [x] B0.3 Agregar `turnos.db` y el entorno virtual al `.gitignore`.
+- [x] B0.4 Definir las constantes de configuración del spec en un solo lugar: `CANCELLATION_WINDOW_HOURS = 2`, antelación 1 h, horizonte 60 días, grilla 15 min.
+- [ ] B0.5 Hacer un inventario de `index.html`: qué funciones y vistas tocan turnos (reservar, cancelar, completar, ausente, bloqueo con cancelación en cascada) y cuáles quedan como mock local.
+- [x] B0.6 Definir la zona horaria de operación (spec §1.4) como configuración: variable `ZONA_HORARIA`, por defecto `America/Argentina/Buenos_Aires`. Se usa solo para interpretar `HorarioLaboral`; todos los instantes se guardan en UTC.
+- [x] B0.7 Documentar el comando de arranque con recarga automática (`uvicorn main:app --reload --port 8000`, ejecutado desde `backend/`) y la URL de Swagger UI (`http://localhost:8000/docs`).
+
+**Salida:** esqueleto del backend y lista de cambios previstos en `index.html`.
+**Hecho cuando:** `uvicorn` arranca una app vacía en el puerto 8000. _(Falta B0.5, el inventario de `index.html`.)_
+
+---
+
+## Fase B1 — Capa 3: esquema y datos iniciales (INV-03)
+
+- [x] B1.1 Escribir `schema.sql` con las 6 tablas de spec §4.1 (`usuario`, `servicio`, `turno`, `horario_laboral`, `bloqueo`, `auditoria_evento`) y **exactamente** los atributos del spec.
+- [x] B1.2 Agregar los `CHECK` de spec §11.5: `rol`, `estado`, `duracion_min` entre 15 y 480, `dia_semana` entre 0 y 6, `fin > inicio`.
+- [x] B1.3 Agregar las claves foráneas, sin `ON DELETE CASCADE` sobre `turno` (spec §4.3).
+- [x] B1.4 Agregar el *trigger* anti-solapamiento de `turno` para `estado = 'CONFIRMADO'` por `profesional_id`, con intervalos `[inicio, fin)` (INV-02, contigüidad válida).
+- [x] B1.5 Escribir `seed.py`: 3 profesionales, 5 o 6 servicios, 2 clientes (uno con email sin verificar), 1 `ADMIN`, horarios de lunes a viernes, 1 o 2 bloqueos y unos 12 turnos con estados variados, incluyendo uno a 1 h 59 min y otro a 3 h de la carga. `id` fijos y fechas relativas a «hoy». `password_hash` con un valor no verificable.
+- [x] B1.6 Verificar que el *trigger* rechaza un `INSERT` solapado hecho directamente en SQL y acepta uno contiguo (criterio 13 y criterio 3).
+- [x] B1.7 Crear el esquema automáticamente al iniciar el servidor (`CREATE … IF NOT EXISTS`, desde el evento de arranque de FastAPI) y cargar los datos iniciales solo si `usuario` está vacía. Así `turnos.db` se genera sola y sobrevive a los reinicios (INV-03).
+- [x] B1.8 Aclarar en spec §4.1 la convención de `HorarioLaboral.dia_semana` (0 = domingo … 6 = sábado, la misma de `index.html`), porque el spec solo dice «0–6».
+
+**Salida:** `turnos.db` generable con un comando.
+**Hecho cuando:** el criterio 13 pasa y el esquema no tiene ninguna tabla ni columna fuera de spec §4.1.
+
+---
+
+## Fase B2 — Capa 2: dominio en Python
+
+- [x] B2.1 `ahora` como parámetro de toda función que dependa del tiempo (D-09).
+- [x] B2.2 INV-02: `overlaps` con intervalos `[inicio, fin)` y contigüidad válida; solapamiento con turnos del profesional, con turnos del mismo cliente, con bloqueos y fuera del horario laboral (modelo: tareas 1.1 a 1.3).
+- [x] B2.3 INV-01: `can_client_cancel` con la ventana de 2 h y límite exacto permitido (modelo: tarea 1.5).
+- [x] B2.4 RN-03: validación de nombre, email, teléfono y email verificado (modelo: tarea 1.4).
+- [x] B2.5 RN-04: antelación mínima, grilla, horizonte y cálculo de `fin` en el servidor.
+- [x] B2.6 RN-06: transiciones permitidas y estados terminales.
+- [x] B2.7 Pruebas unitarias del dominio que cubren la autoverificación pendiente 1.10 (solapamiento parcial, contiguo, 1 h 59 min, 2 h exactas, bloqueo).
+
+**Salida:** `dominio.py` sin dependencias de FastAPI ni de SQLite.
+**Hecho cuando:** las pruebas unitarias del dominio pasan.
+
+---
+
+## Fase B3 — Capa 2: acceso a datos y endpoints (spec §11)
+
+- [x] B3.1 `db.py`: una conexión por solicitud con `PRAGMA foreign_keys = ON`, y un manejador de transacciones `BEGIN IMMEDIATE … COMMIT/ROLLBACK`.
+- [x] B3.2 `GET /api/turnos` con los filtros opcionales `cliente_id`, `profesional_id` y `estado`, ordenado por `inicio`.
+- [x] B3.3 `POST /api/turnos` con el orden de evaluación de spec §11.4: existencia (404), contacto (422/403), tiempo (422), disponibilidad (409). Inserta el `Turno` y el `AuditoriaEvento` `TURNO_CREADO` en la misma transacción.
+- [x] B3.4 `POST /api/turnos/{id}/cancelar`: acceso (404), estado (409), ventana INV-01 para el cliente (409), motivo obligatorio para `PROFESIONAL`/`ADMIN` (`422` sin código de dominio, D-07). Actualiza el `Turno` e inserta `TURNO_CANCELADO` en la misma transacción.
+- [x] B3.5 Traducir los errores a `{"error": "<CÓDIGO>", "mensaje": "…"}` con el HTTP del catálogo de spec §7; la violación del *trigger* se traduce a `SLOT_UNAVAILABLE`; un fallo de persistencia responde `500` sin persistir nada.
+- [x] B3.6 CORS con `CORSMiddleware` (`allow_origins=["*"]`, solo para desarrollo, sin credenciales) y servidor en el puerto 8000.
+- [x] B3.7 Pruebas de la API con el cliente de prueba de FastAPI y una base de datos en archivo temporal: criterios 1 a 7, 10, 11 y 12 (más 9 y 13 en B5). _(Criterio 8: no aplica a la Fase 2, porque crear bloqueos no tiene endpoint en spec §11. Se cubre en la Parte A.)_ Resultado: 33 pruebas en `backend/tests/` pasan.
+- [x] B3.8 Tipado estricto: anotaciones en todo el backend, modelos Pydantic para la entrada y la salida, y `mypy --strict` sin errores.
+- [ ] B3.9 Verificar los 3 endpoints en vivo en Swagger UI (`http://localhost:8000/docs`) con los datos de `seed.py`. _(Verificado por HTTP con `curl`, pero en el puerto 8765: en esta máquina el 8000 estaba ocupado por otro proceso. Falta probarlo a mano en el navegador.)_
+
+**Salida:** backend funcional con los 3 endpoints.
+**Hecho cuando:** las pruebas de B3.7 pasan y ningún endpoint, campo ni código de error excede spec §11 y §7.
+
+---
+
+## Fase B4 — Capa 1: `index.html` consume la API
+
+- [ ] B4.1 Definir en `index.html` la URL base `http://localhost:8000` en una sola constante.
+- [ ] B4.2 Reemplazar la fuente de verdad de los turnos: cargar con `GET /api/turnos` al iniciar y después de cada escritura.
+- [ ] B4.3 Reserva: el modal de confirmación llama a `POST /api/turnos` con `cliente_id`, `servicio_id` e `inicio`; no envía `fin` ni `profesional_id`.
+- [ ] B4.4 Cancelación: el cliente y el Administrador llaman a `POST /api/turnos/{id}/cancelar` con `actor_id` y, cuando corresponde, `motivo_cancelacion`.
+- [ ] B4.5 Mostrar los errores del backend con su código (`SLOT_UNAVAILABLE`, `CANCELLATION_WINDOW_EXPIRED`, `INVALID_CONTACT`, `EMAIL_NOT_VERIFIED`, `INVALID_TIME_RANGE`, `NOT_FOUND`, `INVALID_STATE_TRANSITION`) y un mensaje claro si el backend no responde.
+- [ ] B4.6 Mantener el botón deshabilitado durante el envío para evitar el doble clic (ERR-02.3).
+- [ ] B4.7 Conservar como mock local el catálogo, los profesionales y los horarios, con los mismos `id` que `seed.py` (D-08).
+- [ ] B4.8 Según el inventario de B0.5: dejar como mock local lo que el contrato no cubre y evitar que modifique turnos de la API; las acciones que mutarían turnos fuera del contrato (completar, ausente, bloqueo con cancelación en cascada) se deshabilitan en la UI con un aviso. _(Criterio a confirmar al llegar a esta tarea.)_
+- [ ] B4.9 Retirar del flujo de turnos el reloj simulado (D-09) y quitar el código muerto; la UI no debe contener reglas de negocio.
+
+**Salida:** el flujo reservar → «Mis turnos» → cancelar funciona contra el backend.
+**Hecho cuando:** recargar la página conserva los turnos creados y la consola no muestra errores.
+
+---
+
+## Fase B5 — Verificación contra el spec
+
+Registrar el resultado observado de cada escenario (pasa / falla):
+
+- [ ] B5.1 Criterios 1 a 7 de spec §8 contra la API (el 8 no aplica, ver B3.7) (cubre los pendientes de la Fase 7 de la Parte A: 7.1, 7.6, 7.7, 7.8, 7.9 y 7.11 en lo que el contrato incluye).
+- [ ] B5.2 Criterio 9: crear un turno, detener y volver a iniciar el backend, y comprobar que el turno sigue (INV-03).
+- [ ] B5.3 Criterio 10: forzar un fallo en la escritura de `auditoria_evento` y comprobar el `ROLLBACK`.
+- [ ] B5.4 Criterio 11: dos `POST /api/turnos` simultáneos por el mismo slot; uno `201` y uno `409`.
+- [ ] B5.5 Criterio 12: cancelación a 3 h aceptada y a 1 h 59 min rechazada con la fila intacta.
+- [ ] B5.6 Criterio 13: `INSERT` directo solapado rechazado por la base de datos.
+- [ ] B5.7 Revisión del frontend: consola sin errores, modo oscuro y ancho móvil de 375 px.
+
+**Salida:** tabla escenario ↔ resultado observado.
+**Hecho cuando:** todos los escenarios pasan, o las fallas están corregidas y vueltas a probar.
+
+---
+
+## Fase B6 — Cierre
+
+- [ ] B6.1 Completar la columna «Código» de la trazabilidad de spec §10 (cubre la tarea 8.4 de la Parte A).
+- [ ] B6.2 Actualizar `README.md` (cómo arrancar el backend y abrir `index.html`; el README actual dice que no hace falta backend) y `guia-de-uso.md`.
+- [ ] B6.3 Listar las desviaciones y límites conocidos: sin autenticación (D-06), catálogo mock (D-08), reloj real (D-09), CORS abierto.
+
+**Salida:** documentación al día y reporte de verificación.
+**Hecho cuando:** otra persona puede clonar el repositorio, arrancar el backend, abrir `index.html` y recorrer el flujo.
+
+---
+
+## Resumen de dependencias (Parte B)
+
+```
+B0 Preparación → B1 Esquema → B2 Dominio → B3 Endpoints → B4 Frontend → B5 Verificación → B6 Cierre
+```
+
+B1 y B2 pueden avanzar en paralelo: el dominio no depende de la base de datos hasta B3.
