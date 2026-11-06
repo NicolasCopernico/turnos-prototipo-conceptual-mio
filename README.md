@@ -50,12 +50,13 @@ Las reglas del negocio (sin doble reserva, cancelación hasta 2 horas antes, dat
 
 | Archivo | Contenido |
 |---|---|
-| [spec.md](spec.md) | Especificación técnica: alcance del MVP, roles y permisos, reglas invariantes y modelo de datos |
+| [spec.md](spec.md) | Especificación técnica: alcance del MVP, roles y permisos, reglas invariantes (RN-xx / INV-xx), modelo de datos y, desde la v0.2, el contrato REST de la Fase 2 (§11) |
 | [historias-de-usuario.md](historias-de-usuario.md) | 7 historias de los dos flujos principales, con criterios en Gherkin y casos borde |
-| [plan.md](plan.md) | Plan para convertir la especificación en un prototipo interactivo |
-| [tareas.md](tareas.md) | Tareas organizadas en 9 fases para ejecutar el plan |
+| [plan.md](plan.md) | Plan v2: arquitectura de 3 capas de la Fase 2. El plan del prototipo conceptual (Fase 1) está en su Anexo A |
+| [tareas.md](tareas.md) | Parte A: 9 fases del prototipo conceptual. Parte B: fases B0 a B6 de la Fase 2 (backend) |
 | [index.html](index.html) | La aplicación completa en un solo archivo (dominio, estado, vistas y datos de ejemplo) |
 | [guia-de-uso.md](guia-de-uso.md) | Funcionalidades y guía paso a paso de pruebas en la interfaz |
+| `backend/` (solo en la rama `backend`) | Fase 2: API FastAPI (`main.py`), reglas (`dominio.py`), acceso a SQLite (`db.py`), esquema (`schema.sql`), datos de ejemplo (`seed.py`) y pruebas (`tests/`). Ver [Fase 2](#fase-2--backend-con-persistencia-real-en-construcción) |
 
 ## Cómo se construyó: paso a paso
 
@@ -194,7 +195,7 @@ Abrí [index.html](index.html) y seguí [guia-de-uso.md](guia-de-uso.md). Tres p
 
 ## Límites conocidos
 
-- No hay persistencia: al recargar, los datos vuelven al estado inicial.
+- `index.html` no tiene persistencia: al recargar, los datos vuelven al estado inicial. El backend de la Fase 2 sí persiste, pero todavía no está conectado a la interfaz.
 - No hay inicio de sesión real; el rol se elige con un selector para poder auditar permisos.
 - Los emails son simulados.
 - La concurrencia está simulada: las acciones se procesan una detrás de otra. En un sistema real, la garantía contra la doble reserva debe vivir en la base de datos.
@@ -202,4 +203,117 @@ Abrí [index.html](index.html) y seguí [guia-de-uso.md](guia-de-uso.md). Tres p
 
 ## Tecnologías
 
-HTML, React 18 y Tailwind CSS cargados por CDN, con íconos de Lucide incluidos en el mismo archivo. No hay compilación ni dependencias locales.
+- **Frontend (`index.html`):** HTML, React 18 y Tailwind CSS cargados por CDN, con íconos de Lucide incluidos en el mismo archivo. No hay compilación ni dependencias locales.
+- **Backend (`backend/`):** Python, FastAPI, Uvicorn y SQLite (módulo `sqlite3` de la biblioteca estándar). Pruebas con pytest y tipado verificado con mypy.
+
+## Fase 2 — Backend con persistencia real (en construcción)
+
+La Fase 2 del curso separa el proyecto en **3 capas**: el frontend (`index.html`), un backend en Python con FastAPI y una base de datos SQLite (`turnos.db`). La arquitectura está en [plan.md](plan.md) y el contrato, en [spec.md](spec.md) §11. El avance está en la Parte B de [tareas.md](tareas.md).
+
+**El código del backend vive en la rama `backend`**, separada de `main`. En `main` quedan la documentación (spec, plan, tareas, README) y el frontend. Para usar el backend:
+
+```bash
+git switch backend
+```
+
+Las instrucciones de esta sección se ejecutan sobre esa rama. Cuando la Fase 2 esté completa, `backend` se integra en `main`.
+
+**Estado actual:** el backend funciona y está probado, pero `index.html` **todavía no lo usa**. Sigue guardando todo en memoria (tarea B4 pendiente). Hoy el backend se prueba con Swagger UI, `curl` o `pytest`.
+
+### Puertos
+
+| Puerto | Cuándo |
+|---|---|
+| **8000** | Es el puerto del contrato (spec §11.2 y plan §3.2). Usalo por defecto, en todos los ejemplos de la documentación. |
+| Otro (por ejemplo **8012**) | Solo si el 8000 está ocupado en tu equipo (`Address already in use`). Cambiá el número de `--port` y la URL de Swagger UI. |
+
+Si usás un puerto distinto del 8000, el frontend también tiene que apuntar a él: cuando se conecte `index.html` (tarea B4.1), la URL base del backend va en una sola constante. El CORS no necesita cambios.
+
+### Instalación (una sola vez)
+
+Requiere Python 3.11 o superior (desarrollado con 3.14).
+
+```bash
+cd backend
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+### Levantar el servidor
+
+```bash
+cd backend
+.venv/bin/uvicorn main:app --reload --port 8000
+```
+
+- `--reload` reinicia el servidor al guardar cambios en los `.py`.
+- Al arrancar crea `turnos.db` en la raíz del proyecto (con las 6 tablas de [spec.md](spec.md) §4.1) y la llena con los datos de ejemplo **solo si está vacía**. Los datos sobreviven a los reinicios.
+- **Swagger UI (probar los endpoints):** <http://localhost:8000/docs>
+- Para empezar de cero: detené el servidor, borrá `turnos.db` y volvé a arrancar, o ejecutá `cd backend && .venv/bin/python seed.py --reiniciar`.
+
+### Endpoints
+
+| Método y ruta | Qué hace | Reglas |
+|---|---|---|
+| `GET /api/turnos` | Lista los turnos. Filtros opcionales: `cliente_id`, `profesional_id`, `estado`. | RN-06 |
+| `POST /api/turnos` | Crea una reserva. Cuerpo: `cliente_id`, `servicio_id`, `inicio`. | INV-02, RN-03, RN-04 |
+| `POST /api/turnos/{id}/cancelar` | Cancela una reserva. Cuerpo: `actor_id` y, si cancela un profesional o el administrador, `motivo_cancelacion`. | INV-01 |
+
+Los errores de dominio responden `{"error": "<CÓDIGO>", "mensaje": "…"}` con los códigos de [spec.md](spec.md) §7 (`SLOT_UNAVAILABLE`, `CANCELLATION_WINDOW_EXPIRED`, etc.).
+
+### Probarlo con datos de ejemplo
+
+Los identificadores de la carga inicial son fijos. Con el servidor en el puerto 8000:
+
+```bash
+# Listar turnos
+curl http://localhost:8000/api/turnos
+
+# Cancelar el turno que empieza ~3 h después de la carga (cliente Sofía): 200
+curl -X POST http://localhost:8000/api/turnos/00000000-0000-4000-8000-000000000109/cancelar \
+  -H 'content-type: application/json' \
+  -d '{"actor_id": "00000000-0000-4000-8000-000000000023"}'
+
+# Cancelar el turno que empieza ~1 h 59 min después de la carga (cliente Lucía): 409 CANCELLATION_WINDOW_EXPIRED
+curl -X POST http://localhost:8000/api/turnos/00000000-0000-4000-8000-000000000108/cancelar \
+  -H 'content-type: application/json' \
+  -d '{"actor_id": "00000000-0000-4000-8000-000000000021"}'
+```
+
+Estos dos turnos están calculados respecto del momento de la carga inicial: si la base es de hace más de una hora, el comportamiento cambia. Para repetir la prueba, reiniciá los datos.
+
+| Quién | `id` |
+|---|---|
+| Lucía Fernández (cliente) | `00000000-0000-4000-8000-000000000021` |
+| Martín Gómez (cliente, email sin verificar) | `00000000-0000-4000-8000-000000000022` |
+| Sofía Ruiz (cliente) | `00000000-0000-4000-8000-000000000023` |
+| Admin General | `00000000-0000-4000-8000-000000000001` |
+| Dra. Ana Martínez (profesional) | `00000000-0000-4000-8000-000000000011` |
+| Consulta general, 30 min (Ana Martínez) | `00000000-0000-4000-8000-000000000031` |
+
+Para crear una reserva con `POST /api/turnos`, el `inicio` va en UTC, alineado a 15 minutos, con al menos 1 hora de antelación y dentro del horario laboral del profesional. Por ejemplo, las 10:00 hora de Buenos Aires son las `13:00:00Z`.
+
+### Pruebas y tipado
+
+```bash
+cd backend
+.venv/bin/python -m pytest -q                                   # 33 pruebas (dominio, API, persistencia, concurrencia)
+.venv/bin/python -m mypy --strict main.py dominio.py db.py seed.py tests
+```
+
+Las pruebas usan una base de datos temporal y no tocan `turnos.db`.
+
+### Configuración
+
+| Variable | Para qué | Valor por defecto |
+|---|---|---|
+| `ZONA_HORARIA` | Zona horaria con la que se interpretan los horarios laborales. Los instantes se guardan siempre en UTC. | `America/Argentina/Buenos_Aires` |
+| `TURNOS_DB` | Ruta de la base de datos. | `turnos.db` en la raíz del proyecto |
+
+### Límites de la Fase 2
+
+- No hay autenticación: la API recibe `cliente_id` o `actor_id` en el cuerpo y confía en él (spec D-06).
+- Solo existen los 3 endpoints del contrato. El catálogo de servicios y los horarios no se leen de la API: el frontend los conserva como datos de ejemplo (spec D-08).
+- El servidor usa el reloj real, no el reloj simulado del prototipo (spec D-09).
+- CORS abierto a cualquier origen: es solo para desarrollo local.
+- El `password_hash` de los usuarios de ejemplo no es verificable porque el inicio de sesión queda fuera de esta fase.
