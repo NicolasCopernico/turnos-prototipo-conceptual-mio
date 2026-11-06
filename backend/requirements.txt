@@ -1,0 +1,6 @@
+fastapi>=0.162,<1
+uvicorn>=0.54,<1
+# desarrollo y pruebas
+pytest>=9
+httpx>=0.28
+mypy>=2
