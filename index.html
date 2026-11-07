@@ -19,16 +19,22 @@
 
 <script type="text/babel">
 /* =====================================================================
-   Turnos Pro — prototipo del spec.md (monolítico)
-   Secciones: 1 Config · 2 Tiempo · 3 Dominio (reglas del spec) ·
+   Turnos Pro — frontend del spec.md (Capa 1 de la arquitectura de 3 capas)
+   Secciones: 1 Config · 2 Tiempo · 3 Dominio y cliente HTTP ·
               4 Datos mock · 5 UI compartida · 6 Vista Cliente ·
               7 Vista Administrador · 8 App
-   La UI nunca decide permisos: solo muestra lo que devuelve el dominio.
+   Los TURNOS viven en la base de datos (SQLite) y se leen/escriben solo por la API
+   (spec.md §11). El catálogo, los horarios, los bloqueos y los emails siguen siendo
+   datos mock locales (spec D-08). La UI nunca decide permisos: muestra lo que
+   responde el backend.
    ===================================================================== */
 const { useState, useRef, useMemo, useEffect, createContext, useContext } = React;
 
 /* ============================ 1. CONFIG ============================ */
 const CONFIG = { CANCEL_WINDOW_H: 2, MIN_LEAD_H: 1, HORIZON_DAYS: 60, GRID_MIN: 15 };
+// URL base del backend FastAPI (Capa 2). Por defecto, el puerto 8012. Para usar otro puerto sin editar
+// el archivo, abrí la página con ?api=, por ejemplo  index.html?api=http://localhost:8000
+const API_BASE = (new URLSearchParams(window.location.search).get('api') || 'http://localhost:8012').replace(/\/+$/, '');
 const MIN = 60000, HOUR = 3600000, DAY = 86400000;
 
 /* ============================ 2. TIEMPO ============================ */
@@ -57,11 +63,12 @@ const fromInputDT = (s) => new Date(s).getTime();
 const fmtDur = (ms) => { const m = Math.max(0, Math.round(ms / MIN)); const h = Math.floor(m / 60); return h ? `${h} h ${m % 60} min` : `${m} min`; };
 const money = (n) => n.toLocaleString('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 });
 
-/* ============================ 3. DOMINIO ============================ */
+/* ============================ 3. DOMINIO Y CLIENTE HTTP ============================ */
 const HTTP = {
   SLOT_UNAVAILABLE: 409, CANCELLATION_WINDOW_EXPIRED: 409, INVALID_CONTACT: 422, EMAIL_NOT_VERIFIED: 403,
   INVALID_TIME_RANGE: 422, INVALID_STATE_TRANSITION: 409, SERVICE_HAS_ACTIVE_BOOKINGS: 409,
   FORBIDDEN: 403, NOT_FOUND: 404, SERVICE_UNAVAILABLE: 409, REASON_REQUIRED: 422,
+  NOT_IMPLEMENTED: 501, // solo del frontend: acción fuera del contrato REST de la Fase 2
 };
 const fail = (state, code, message, details) => ({ state, error: { code, http: HTTP[code], message, details } });
 const succeed = (state, data) => ({ state, ok: true, data });
@@ -144,87 +151,98 @@ function canClientCancel(t, now) {
 /* ---- RBAC-04 ---- */
 const inScope = (actor, profesionalId) => actor.role === 'ADMIN' || (actor.role === 'PROFESIONAL' && actor.id === profesionalId);
 
-/* ---- F-04: reservar ---- */
-function bookAppointment(state, { actor, clienteId, servicioId, inicio, contacto }) {
-  const s = { ...state };
+/* ---- Cliente HTTP del contrato (spec §11). La decisión es del backend; aquí solo se transporta. ---- */
+const toIso = (ts) => new Date(ts).toISOString().replace(/\.\d{3}Z$/, 'Z');
+async function apiFetch(path, init) {
+  let resp;
+  try { resp = await fetch(`${API_BASE}${path}`, init); }
+  catch (e) {
+    return { error: { code: 'API_UNAVAILABLE', http: 0, message: `No se pudo conectar con el servidor (${API_BASE}). ¿Está levantado el backend?` } };
+  }
+  let body = null;
+  try { body = await resp.json(); } catch (e) { /* cuerpo vacío o que no es JSON */ }
+  if (resp.ok) return { ok: true, data: body };
+  const detail = body && body.detail;
+  const message = (body && body.mensaje)
+    || (typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map((d) => d.msg).join(' · ') : '')
+    || `Error HTTP ${resp.status}`;
+  return { error: { code: (body && body.error) || `HTTP_${resp.status}`, http: resp.status, message } };
+}
+const postJson = (path, body) => apiFetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const fromApiTurno = (users, t) => ({
+  id: t.id, clienteId: t.cliente_id, profesionalId: t.profesional_id, servicioId: t.servicio_id,
+  inicio: Date.parse(t.inicio), fin: Date.parse(t.fin), estado: t.estado,
+  motivo: t.motivo_cancelacion, canceladoPor: t.cancelado_por_id,
+  canceladoRol: (users.find((u) => u.id === t.cancelado_por_id) || {}).role || null, creadoEn: Date.parse(t.creado_en),
+});
+/* Capa de datos de los turnos: GET /api/turnos (reemplaza al arreglo en memoria). */
+async function cargarTurnos(users) {
+  const r = await apiFetch('/api/turnos');
+  if (r.error) return r;
+  return { ok: true, data: r.data.map((t) => fromApiTurno(users, t)) };
+}
+/* Copia del estado actual con los turnos releídos de la base de datos. */
+async function sincronizarTurnos(ctx) {
+  const l = await cargarTurnos(ctx.get().users);
+  const s = { ...ctx.get() };
+  if (l.ok) { s.turnos = l.data; s.apiEstado = 'ok'; s.apiError = null; }
+  return s;
+}
+
+/* ---- F-04: reservar → POST /api/turnos (INV-02, RN-03 y RN-04 las decide el backend) ---- */
+async function bookAppointment(state, { actor, clienteId, servicioId, inicio, contacto }, ctx) {
   if (actor.role !== 'CLIENTE' || actor.id !== clienteId) return fail(state, 'FORBIDDEN', 'Solo un cliente puede reservar para sí mismo.');
-  const svc = svcOf(s, servicioId);
-  if (!svc || !svc.activo) return fail(state, 'SERVICE_UNAVAILABLE', 'El servicio ya no está disponible para reservas.');
+  const svc = svcOf(state, servicioId);
+  if (!svc) return fail(state, 'NOT_FOUND', 'El servicio no existe.');
+  // Ayuda de formulario (RN-03): el backend vuelve a validar con el contacto guardado en la base.
   const c = normalizeContact(contacto), errs = validateContact(c);
   if (Object.keys(errs).length) return fail(state, 'INVALID_CONTACT', 'Datos de contacto inválidos: ' + Object.values(errs).join(' '), errs);
-  const u = userOf(s, clienteId);
-  const emailChanged = u.email !== c.email;
-  s.users = s.users.map((x) => (x.id === clienteId ? { ...x, ...c, emailVerificado: emailChanged ? false : x.emailVerificado } : x));
-  if (!userOf(s, clienteId).emailVerificado)
-    return fail(s, 'EMAIL_NOT_VERIFIED', 'Tenés que verificar tu email antes de reservar.');
-  const fin = inicio + svc.duracionMin * MIN;
-  const issue = slotIssue(s, svc.profesionalId, inicio, fin);
-  if (issue) return fail(s, issue.code, issue.message);
-  if (s.turnos.some((t) => t.estado === 'CONFIRMADO' && t.clienteId === clienteId && overlaps(inicio, fin, t.inicio, t.fin)))
-    return fail(s, 'SLOT_UNAVAILABLE', 'Ya tenés un turno confirmado que se solapa con ese horario.');
-  const turno = { id: nextId(s, 't'), clienteId, profesionalId: svc.profesionalId, servicioId, inicio, fin, estado: 'CONFIRMADO',
-    motivo: null, canceladoPor: null, canceladoRol: null, creadoEn: s.now };
-  s.turnos = [...s.turnos, turno];
+  const u = userOf(state, clienteId);
+  const contactoSinGuardar = u.nombre !== c.nombre || u.email !== c.email || u.telefono !== c.telefono;
+  const res = await postJson('/api/turnos', { cliente_id: clienteId, servicio_id: servicioId, inicio: toIso(inicio) });
+  if (res.error && res.error.code === 'API_UNAVAILABLE') return { state: ctx.get(), error: res.error };
+  const s = await sincronizarTurnos(ctx); // con 201 o con 409, la lista vuelve a salir de la base de datos
+  if (res.error) return { state: s, error: res.error };
+  const turno = fromApiTurno(s.users, res.data);
+  if (!s.turnos.some((t) => t.id === turno.id)) s.turnos = [...s.turnos, turno];
+  const fin = turno.fin;
   audit(s, actor, 'TURNO_CREADO', 'Turno', turno.id, `${svc.nombre} · ${fmtDT(inicio)}`, svc.profesionalId);
   sendEmail(s, userOf(s, clienteId), 'confirmacion', 'Turno confirmado',
     `${svc.nombre} con ${userOf(s, svc.profesionalId).nombre}. ${fmtDateLong(inicio)}, de ${fmtTime(inicio)} a ${fmtTime(fin)}. ` +
     `Podés cancelar sin cargo hasta ${CONFIG.CANCEL_WINDOW_H} horas antes (${fmtTime(inicio - CONFIG.CANCEL_WINDOW_H * HOUR)}).`,
     { profesionalId: svc.profesionalId });
-  return succeed(s, { turno });
+  return succeed(s, { turno, contactoSinGuardar });
 }
 
-/* ---- cancelación interna (sin chequeos de permiso) ---- */
+/* ---- registro local (mock de auditoría y emails) de una cancelación ya confirmada por la API ---- */
 function applyCancel(s, t, actor, motivo) {
-  s.turnos = s.turnos.map((x) => (x.id === t.id ? { ...x, estado: 'CANCELADO', motivo: motivo || null, canceladoPor: actor.id, canceladoRol: actor.role } : x));
   const svc = svcOf(s, t.servicioId);
   audit(s, actor, 'TURNO_CANCELADO', 'Turno', t.id, motivo ? `Motivo: ${motivo}` : 'Cancelado por el cliente', t.profesionalId);
   sendEmail(s, userOf(s, t.clienteId), 'cancelacion', 'Turno cancelado',
     `Se canceló ${svc.nombre} del ${fmtDT(t.inicio)}.` + (actor.role === 'CLIENTE' ? '' : ` Motivo: ${motivo}.`),
     { profesionalId: t.profesionalId });
 }
-/* ---- acceso a un turno con RBAC-02 (ajeno ⇒ 404) ---- */
-function loadTurno(s, actor, turnoId) {
-  const t = s.turnos.find((x) => x.id === turnoId);
-  if (!t) return null;
-  if (actor.role === 'CLIENTE' && t.clienteId !== actor.id) return null;
-  if (actor.role === 'PROFESIONAL' && t.profesionalId !== actor.id) return null;
-  return t;
-}
 const notFound = (state) => fail(state, 'NOT_FOUND', 'El recurso no existe o no tenés acceso a él.');
 
-/* ---- F-06 / F-11: cancelar ---- */
-function cancelAppointment(state, { actor, turnoId, motivo }) {
-  const t = loadTurno(state, actor, turnoId);
-  if (!t) return notFound(state);
-  if (t.estado !== 'CONFIRMADO') return fail(state, 'INVALID_STATE_TRANSITION', `El turno está ${t.estado} y no puede cancelarse.`);
-  if (state.now >= t.inicio) return fail(state, 'INVALID_STATE_TRANSITION', 'El turno ya comenzó: corresponde marcarlo como completado o ausente.');
+/* ---- F-06 / F-11: cancelar → POST /api/turnos/{id}/cancelar (INV-01 la decide el backend) ---- */
+async function cancelAppointment(state, { actor, turnoId, motivo }, ctx) {
   const m = String(motivo || '').trim();
-  if (actor.role === 'CLIENTE') {
-    const w = canClientCancel(t, state.now);
-    if (!w.ok) return fail(state, 'CANCELLATION_WINDOW_EXPIRED', `No podés cancelar: ${w.reason.toLowerCase()}`);
-  } else if (!m) return fail(state, 'REASON_REQUIRED', 'El motivo de cancelación es obligatorio.');
-  const s = { ...state };
-  applyCancel(s, t, actor, m);
+  const body = { actor_id: actor.id };
+  if (m) body.motivo_cancelacion = m;
+  const res = await postJson(`/api/turnos/${encodeURIComponent(turnoId)}/cancelar`, body);
+  if (res.error && res.error.code === 'API_UNAVAILABLE') return { state: ctx.get(), error: res.error };
+  const antes = state.turnos.find((x) => x.id === turnoId);
+  const s = await sincronizarTurnos(ctx);
+  if (res.error) return { state: s, error: res.error };
+  if (antes) applyCancel(s, antes, actor, m);
   return succeed(s, {});
 }
 
-/* ---- RN-06: completar / ausente ---- */
-function closeAppointment(kind) {
-  return (state, { actor, turnoId }) => {
-    if (actor.role === 'CLIENTE') return fail(state, 'FORBIDDEN', 'No tenés permiso para esta acción.');
-    const t = loadTurno(state, actor, turnoId);
-    if (!t) return notFound(state);
-    if (t.estado !== 'CONFIRMADO') return fail(state, 'INVALID_STATE_TRANSITION', `El turno está ${t.estado}; los estados finales no admiten cambios.`);
-    if (kind === 'COMPLETADO' && state.now < t.inicio) return fail(state, 'INVALID_STATE_TRANSITION', 'No se puede completar un turno que todavía no comenzó.');
-    if (kind === 'AUSENTE' && state.now < t.fin) return fail(state, 'INVALID_STATE_TRANSITION', 'Solo se puede marcar ausente una vez finalizado el turno.');
-    const s = { ...state };
-    s.turnos = s.turnos.map((x) => (x.id === t.id ? { ...x, estado: kind } : x));
-    audit(s, actor, kind === 'COMPLETADO' ? 'TURNO_COMPLETADO' : 'TURNO_AUSENTE', 'Turno', t.id, '', t.profesionalId);
-    return succeed(s, {});
-  };
-}
-const completeAppointment = closeAppointment('COMPLETADO');
-const markNoShow = closeAppointment('AUSENTE');
+/* ---- RN-06: completar / ausente. Fuera del contrato de la Fase 2 (spec §11.1): no hay endpoint. ---- */
+const faseDos = (accion) => (state) => fail(state, 'NOT_IMPLEMENTED',
+  `${accion} todavía no está disponible: el contrato REST de la Fase 2 (spec §11) solo incluye listar, crear y cancelar turnos.`);
+const completeAppointment = faseDos('Completar un turno');
+const markNoShow = faseDos('Marcar un turno como ausente');
 
 /* ---- F-09 / RN-05: bloqueos ---- */
 function createBlock(state, { actor, profesionalId, inicio, fin, motivo, confirmCancel }) {
@@ -236,10 +254,9 @@ function createBlock(state, { actor, profesionalId, inicio, fin, motivo, confirm
   const conflicts = state.turnos.filter((t) => t.estado === 'CONFIRMADO' && t.profesionalId === profesionalId && overlaps(inicio, fin, t.inicio, t.fin));
   if (conflicts.some((t) => t.inicio <= state.now))
     return fail(state, 'INVALID_STATE_TRANSITION', 'Hay un turno en curso dentro del rango; ciérralo antes de bloquear.');
-  if (conflicts.length && !confirmCancel)
-    return fail(state, 'SLOT_UNAVAILABLE', `El rango tiene ${conflicts.length} turno(s) confirmado(s). Confirmá su cancelación para crear el bloqueo.`, { conflicts });
+  if (conflicts.length)
+    return fail(state, 'NOT_IMPLEMENTED', `El rango tiene ${conflicts.length} turno(s) confirmado(s). Cancelarlos en cascada todavía no está disponible (no hay endpoint en la Fase 2): cancelalos uno por uno desde la agenda y volvé a crear el bloqueo.`);
   const s = { ...state };
-  conflicts.forEach((t) => applyCancel(s, t, actor, m));
   const touching = s.blocks.filter((b) => b.profesionalId === profesionalId && b.inicio <= fin && inicio <= b.fin);
   const merged = { id: nextId(s, 'b'), profesionalId, motivo: m,
     inicio: Math.min(inicio, ...touching.map((b) => b.inicio)), fin: Math.max(fin, ...touching.map((b) => b.fin)) };
@@ -276,15 +293,9 @@ function sendVerification(state, { userId }) {
   sendEmail(s, u, 'verificacion', 'Verificá tu email', `Hacé clic en el enlace para confirmar ${u.email}.`, { tokenEmail: u.email });
   return succeed(s, {});
 }
-function verifyEmail(state, { userId, token }) {
-  const u = userOf(state, userId);
-  if (u.email !== token) return fail(state, 'INVALID_CONTACT', 'El enlace de verificación es obsoleto: el email cambió.');
-  const s = { ...state };
-  s.users = s.users.map((x) => (x.id === userId ? { ...x, emailVerificado: true } : x));
-  audit(s, { id: userId, role: u.role }, 'EMAIL_VERIFICADO', 'Usuario', userId, u.email);
-  return succeed(s, {});
-}
-const advanceClock = (state, { ms }) => succeed({ ...state, now: state.now + ms }, {});
+// La verificación de email (F-01) está fuera de la Fase 2: el flag vive en la base de datos y no hay endpoint para cambiarlo.
+const verifyEmail = (state) => fail(state, 'NOT_IMPLEMENTED',
+  'La verificación de email todavía no está disponible (F-01 queda fuera de la Fase 2): el email de este usuario sigue sin verificar en la base de datos.');
 function setEmailDown(state, { down }) {
   const s = { ...state, emailDown: down };
   if (!down) s.emails = s.emails.map((m) => (m.status === 'pendiente' ? { ...m, status: 'enviado' } : m));
@@ -337,64 +348,46 @@ function computeMetrics(s, profIds, period) {
 }
 
 const Domain = { computeSlots, slotIssue, canClientCancel, validateContact, normalizeContact, bookAppointment, cancelAppointment,
-  completeAppointment, markNoShow, createBlock, removeBlock, toggleService, sendVerification, verifyEmail, advanceClock, setEmailDown, computeMetrics, overlaps };
+  completeAppointment, markNoShow, createBlock, removeBlock, toggleService, sendVerification, verifyEmail, setEmailDown, computeMetrics, overlaps };
 
 /* ============================ 4. DATOS MOCK ============================ */
+// Identificadores fijos: son los mismos de backend/seed.py (spec D-08).
+const uid = (n) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
+const ID = { admin: uid(0x01), p1: uid(0x11), p2: uid(0x12), p3: uid(0x13), c1: uid(0x21), c2: uid(0x22), c3: uid(0x23),
+  s1: uid(0x31), s2: uid(0x32), s3: uid(0x33), s4: uid(0x34), s5: uid(0x35), s6: uid(0x36) };
+
 function makeInitialState() {
-  const base = dayStart(Date.now());
-  const D0 = isBusinessDay(base) ? base : addBusinessDays(base, 1);
-  const bd = (n) => (n === 0 ? D0 : addBusinessDays(D0, n));
-  const at = (n, h, m = 0) => atMin(bd(n), h * 60 + m);
-  const now = atMin(D0, 7 * 60 + 30); // reloj simulado: 07:30 del primer día hábil
+  const now = Date.now(); // hora real: el backend usa el reloj real (spec D-09)
+  const hoy = dayStart(now);
+  const at = (n, h, m = 0) => atMin(addBusinessDays(hoy, n), h * 60 + m); // n-ésimo día hábil después de hoy, como seed.py
   const users = [
-    { id: 'admin', role: 'ADMIN', nombre: 'Admin General', email: 'admin@turnospro.test', telefono: '+5491100000000', emailVerificado: true },
-    { id: 'p1', role: 'PROFESIONAL', nombre: 'Dra. Ana Martínez', email: 'ana@turnospro.test', telefono: '+5491100000001', emailVerificado: true },
-    { id: 'p2', role: 'PROFESIONAL', nombre: 'Dr. Bruno Salas', email: 'bruno@turnospro.test', telefono: '+5491100000002', emailVerificado: true },
-    { id: 'p3', role: 'PROFESIONAL', nombre: 'Lic. Carla Ibáñez', email: 'carla@turnospro.test', telefono: '+5491100000003', emailVerificado: true },
-    { id: 'c1', role: 'CLIENTE', nombre: 'Lucía Fernández', email: 'lucia@mail.test', telefono: '+5491155550101', emailVerificado: true },
-    { id: 'c2', role: 'CLIENTE', nombre: 'Martín Gómez', email: 'martin@mail.test', telefono: '+5491155550102', emailVerificado: false },
-    { id: 'c3', role: 'CLIENTE', nombre: 'Sofía Ruiz', email: 'sofia@mail.test', telefono: '+5491155550103', emailVerificado: true },
+    { id: ID.admin, role: 'ADMIN', nombre: 'Admin General', email: 'admin@turnospro.test', telefono: '+5491100000000', emailVerificado: true },
+    { id: ID.p1, role: 'PROFESIONAL', nombre: 'Dra. Ana Martínez', email: 'ana@turnospro.test', telefono: '+5491100000001', emailVerificado: true },
+    { id: ID.p2, role: 'PROFESIONAL', nombre: 'Dr. Bruno Salas', email: 'bruno@turnospro.test', telefono: '+5491100000002', emailVerificado: true },
+    { id: ID.p3, role: 'PROFESIONAL', nombre: 'Lic. Carla Ibáñez', email: 'carla@turnospro.test', telefono: '+5491100000003', emailVerificado: true },
+    { id: ID.c1, role: 'CLIENTE', nombre: 'Lucía Fernández', email: 'lucia@mail.test', telefono: '+5491155550101', emailVerificado: true },
+    { id: ID.c2, role: 'CLIENTE', nombre: 'Martín Gómez', email: 'martin@mail.test', telefono: '+5491155550102', emailVerificado: false },
+    { id: ID.c3, role: 'CLIENTE', nombre: 'Sofía Ruiz', email: 'sofia@mail.test', telefono: '+5491155550103', emailVerificado: true },
   ];
   const services = [
-    { id: 's1', profesionalId: 'p1', nombre: 'Consulta general', descripcion: 'Evaluación clínica y orientación.', duracionMin: 30, precio: 18000, activo: true },
-    { id: 's2', profesionalId: 'p1', nombre: 'Control anual', descripcion: 'Chequeo completo con estudios básicos.', duracionMin: 60, precio: 32000, activo: true },
-    { id: 's3', profesionalId: 'p2', nombre: 'Sesión de terapia', descripcion: 'Sesión individual.', duracionMin: 45, precio: 25000, activo: true },
-    { id: 's4', profesionalId: 'p2', nombre: 'Evaluación inicial', descripcion: 'Primera entrevista y plan de trabajo.', duracionMin: 60, precio: 30000, activo: true },
-    { id: 's5', profesionalId: 'p3', nombre: 'Asesoría nutricional', descripcion: 'Seguimiento y ajustes.', duracionMin: 30, precio: 15000, activo: true },
-    { id: 's6', profesionalId: 'p3', nombre: 'Plan alimentario', descripcion: 'Diseño de plan personalizado.', duracionMin: 45, precio: 22000, activo: true },
+    { id: ID.s1, profesionalId: ID.p1, nombre: 'Consulta general', descripcion: 'Evaluación clínica y orientación.', duracionMin: 30, precio: 18000, activo: true },
+    { id: ID.s2, profesionalId: ID.p1, nombre: 'Control anual', descripcion: 'Chequeo completo con estudios básicos.', duracionMin: 60, precio: 32000, activo: true },
+    { id: ID.s3, profesionalId: ID.p2, nombre: 'Sesión de terapia', descripcion: 'Sesión individual.', duracionMin: 45, precio: 25000, activo: true },
+    { id: ID.s4, profesionalId: ID.p2, nombre: 'Evaluación inicial', descripcion: 'Primera entrevista y plan de trabajo.', duracionMin: 60, precio: 30000, activo: true },
+    { id: ID.s5, profesionalId: ID.p3, nombre: 'Asesoría nutricional', descripcion: 'Seguimiento y ajustes.', duracionMin: 30, precio: 15000, activo: true },
+    { id: ID.s6, profesionalId: ID.p3, nombre: 'Plan alimentario', descripcion: 'Diseño de plan personalizado.', duracionMin: 45, precio: 22000, activo: true },
   ];
   const schedules = {
-    p1: { days: [1, 2, 3, 4, 5], ranges: [[9 * 60, 13 * 60], [14 * 60, 18 * 60]] },
-    p2: { days: [1, 2, 3, 4, 5], ranges: [[10 * 60, 14 * 60], [15 * 60, 19 * 60]] },
-    p3: { days: [1, 2, 3, 4, 5], ranges: [[9 * 60, 13 * 60]] },
+    [ID.p1]: { days: [1, 2, 3, 4, 5], ranges: [[9 * 60, 13 * 60], [14 * 60, 18 * 60]] },
+    [ID.p2]: { days: [1, 2, 3, 4, 5], ranges: [[10 * 60, 14 * 60], [15 * 60, 19 * 60]] },
+    [ID.p3]: { days: [1, 2, 3, 4, 5], ranges: [[9 * 60, 13 * 60]] },
   };
-  const mk = (id, c, svc, inicio, estado, extra = {}) => {
-    const sv = services.find((x) => x.id === svc);
-    return { id, clienteId: c, profesionalId: sv.profesionalId, servicioId: svc, inicio, fin: inicio + sv.duracionMin * MIN, estado,
-      motivo: null, canceladoPor: null, canceladoRol: null, creadoEn: now - 5 * DAY, ...extra };
-  };
-  const turnos = [
-    mk('t1', 'c1', 's1', at(-3, 9), 'COMPLETADO'),
-    mk('t2', 'c3', 's2', at(-3, 10), 'COMPLETADO'),
-    mk('t3', 'c1', 's3', at(-2, 10), 'COMPLETADO'),
-    mk('t4', 'c3', 's5', at(-2, 11), 'AUSENTE'),
-    mk('t5', 'c2', 's1', at(-1, 9, 30), 'COMPLETADO'),
-    mk('t6', 'c1', 's4', at(-1, 15), 'CANCELADO', { canceladoPor: 'c1', canceladoRol: 'CLIENTE' }),
-    mk('t7', 'c3', 's6', at(-1, 10), 'CANCELADO', { motivo: 'Imprevisto médico', canceladoPor: 'p3', canceladoRol: 'PROFESIONAL' }),
-    mk('t8', 'c1', 's1', at(0, 9, 30), 'CONFIRMADO'),   // en exactamente 2 h: límite de RN-01
-    mk('t9', 'c3', 's5', at(0, 10, 30), 'CONFIRMADO'),  // en 3 h
-    mk('t10', 'c2', 's3', at(0, 11), 'CONFIRMADO'),
-    mk('t11', 'c1', 's2', at(0, 15), 'CONFIRMADO'),
-    mk('t12', 'c3', 's1', at(1, 10), 'CONFIRMADO'),
-    mk('t13', 'c1', 's4', at(1, 11), 'CONFIRMADO'),
-    mk('t14', 'c2', 's5', at(2, 9), 'CONFIRMADO'),
-    mk('t15', 'c1', 's2', at(3, 15, 30), 'CONFIRMADO'),
+  const turnos = []; // los turnos se cargan de la API con cargarTurnos(); ya no hay arreglo en memoria
+  const blocks = [ // mock local, alineado con los bloqueos de backend/seed.py (el contrato no los expone)
+    { id: 'b1', profesionalId: ID.p1, inicio: at(2, 12), fin: at(2, 13), motivo: 'Trámite personal' },
+    { id: 'b2', profesionalId: ID.p2, inicio: at(3, 10), fin: at(3, 19), motivo: 'Capacitación' },
   ];
-  const blocks = [
-    { id: 'b1', profesionalId: 'p1', inicio: at(1, 12), fin: at(1, 13), motivo: 'Trámite personal' },
-    { id: 'b2', profesionalId: 'p2', inicio: at(2, 10), fin: at(2, 19), motivo: 'Capacitación' },
-  ];
-  const s = { now, users, services, schedules, turnos, blocks, audit: [], emails: [], emailDown: false, seq: 100 };
+  const s = { now, users, services, schedules, turnos, blocks, audit: [], emails: [], emailDown: false, seq: 100, apiEstado: 'cargando', apiError: null };
   audit(s, { id: 'sistema', role: 'ADMIN' }, 'DATOS_INICIALES', 'Sistema', '-', 'Se cargaron los datos de ejemplo.');
   return s;
 }
@@ -560,23 +553,29 @@ function BookingModal({ svc, inicio, onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null);
   const [sim, setSim] = useState({ race: false, double: false });
+  const sending = useRef(false); // evita el doble clic aunque React todavía no haya vuelto a renderizar (ERR-02.3)
   const fin = inicio + svc.duracionMin * MIN;
   const actor = { id: clientId, role: 'CLIENTE' };
 
-  const submit = () => {
-    if (busy) return;
+  const submit = async () => {
+    if (sending.current) return;
+    sending.current = true;
     setBusy(true);
-    if (sim.race) {
-      const other = state.users.find((u) => u.role === 'CLIENTE' && u.id !== clientId && u.emailVerificado);
-      const r = act(Domain.bookAppointment, { actor: { id: other.id, role: 'CLIENTE' }, clienteId: other.id, servicioId: svc.id, inicio,
-        contacto: { nombre: other.nombre, email: other.email, telefono: other.telefono } }, { silent: true });
-      if (r.ok) toast('info', `${other.nombre} reservó este horario un instante antes que vos.`);
-    }
-    const args = { actor, clienteId, servicioId: svc.id, inicio, contacto: form };
-    const r = act(Domain.bookAppointment, args);
-    if (sim.double && r.ok) act(Domain.bookAppointment, args); // segundo envío: debe rechazarse
-    setBusy(false);
-    if (r.ok) { setDone(r.data.turno); setError(null); onDone && onDone(); } else setError(r.error);
+    try {
+      if (sim.race) {
+        const other = state.users.find((u) => u.role === 'CLIENTE' && u.id !== clientId && u.emailVerificado);
+        const r0 = await act(Domain.bookAppointment, { actor: { id: other.id, role: 'CLIENTE' }, clienteId: other.id, servicioId: svc.id, inicio,
+          contacto: { nombre: other.nombre, email: other.email, telefono: other.telefono } }, { silent: true });
+        if (r0.ok) toast('info', `${other.nombre} reservó este horario un instante antes que vos.`);
+      }
+      const args = { actor, clienteId: clientId, servicioId: svc.id, inicio, contacto: form };
+      const r = await act(Domain.bookAppointment, args);
+      if (sim.double && r.ok) await act(Domain.bookAppointment, args); // segundo envío: el backend debe rechazarlo
+      if (r.ok) {
+        setDone(r.data.turno); setError(null); onDone && onDone();
+        if (r.data.contactoSinGuardar) toast('info', 'Los cambios en los datos de contacto no se guardaron: la API de la Fase 2 no permite editar usuarios.');
+      } else setError(r.error);
+    } finally { sending.current = false; setBusy(false); }
   };
 
   if (done) {
@@ -641,7 +640,7 @@ function BookingModal({ svc, inicio, onClose, onDone }) {
 function ClientView() {
   const { state, act, clientId, auditMode, openInbox } = useApp();
   const me = userOf(state, clientId);
-  const [svcId, setSvcId] = useState('s1');
+  const [svcId, setSvcId] = useState(ID.s1);
   const [day, setDay] = useState(() => dayStart(state.now));
   const [picked, setPicked] = useState(null);
   const [tab, setTab] = useState('proximos');
@@ -804,7 +803,7 @@ function TurnoDetail({ turnoId, actor, onClose }) {
   const visible = inScope(actor, t.profesionalId);
   const confirmado = t.estado === 'CONFIRMADO';
   const canComplete = confirmado && state.now >= t.inicio, canNoShow = confirmado && state.now >= t.fin, canCancel = confirmado && state.now < t.inicio;
-  const run = (fn, success) => { const r = act(fn, { actor, turnoId: t.id, motivo }, { success }); if (r.ok) onClose(); };
+  const run = async (fn, success) => { const r = await act(fn, { actor, turnoId: t.id, motivo }, { success }); if (r.ok) onClose(); };
   return (
     <Modal title={`Turno ${t.id}`} onClose={onClose}>
       <div className="space-y-4 text-sm">
@@ -1123,8 +1122,8 @@ function App() {
   const [state, setState] = useState(() => makeInitialState());
   const ref = useRef(state);
   const [view, setView] = useState('cliente');
-  const [clientId, setClientId] = useState('c1');
-  const [adminId, setAdminId] = useState('admin');
+  const [clientId, setClientId] = useState(ID.c1);
+  const [adminId, setAdminId] = useState(ID.admin);
   const [auditMode, setAuditMode] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [inbox, setInbox] = useState(false);
@@ -1134,18 +1133,42 @@ function App() {
     setToasts((t) => [...t, { id, type, text, code, http }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 5500);
   };
-  // act aplica una operación de dominio de forma síncrona y secuencial sobre la fuente única de verdad.
+  // act ejecuta una operación del dominio sobre el estado local. Las operaciones que llaman a la API devuelven
+  // una promesa: act también devuelve una promesa y el estado nuevo se calcula al terminar la llamada.
   const act = (fn, args, opts = {}) => {
-    const r = fn(ref.current, args);
-    ref.current = r.state;
-    setState(r.state);
-    if (r.error && !opts.silent) toast('error', r.error.message, r.error.code, r.error.http);
-    else if (r.ok && opts.success) toast('ok', opts.success);
-    return r;
+    const done = (r) => {
+      ref.current = r.state;
+      setState(r.state);
+      if (r.error && !opts.silent) toast('error', r.error.message, r.error.code, r.error.http);
+      else if (r.ok && opts.success) toast('ok', opts.success);
+      return r;
+    };
+    const out = fn(ref.current, args, { get: () => ref.current });
+    return out && typeof out.then === 'function' ? out.then(done) : done(out);
   };
-  const reset = () => { const s = makeInitialState(); ref.current = s; setState(s); setToasts([]); toast('info', 'Datos reiniciados.'); };
+  // Relee los turnos de la base de datos (GET /api/turnos) y avanza la hora real.
+  const refrescar = async () => {
+    const l = await cargarTurnos(ref.current.users);
+    const s = { ...ref.current, now: Date.now() };
+    if (l.ok) { s.turnos = l.data; s.apiEstado = 'ok'; s.apiError = null; } else { s.apiEstado = 'error'; s.apiError = l.error; }
+    ref.current = s;
+    setState(s);
+  };
+  const reset = () => {
+    const s = makeInitialState(); // reinicia solo los datos mock locales; los turnos viven en la base de datos
+    s.turnos = ref.current.turnos; s.apiEstado = ref.current.apiEstado; s.apiError = ref.current.apiError;
+    ref.current = s; setState(s); setToasts([]);
+    toast('info', 'Datos locales reiniciados (emails, auditoría, bloqueos y servicios de ejemplo). Los turnos no se tocan: están en la base de datos.');
+  };
 
-  useEffect(() => { window.__store = { get: () => ref.current, act, Domain, reset }; });
+  useEffect(() => {
+    refrescar();
+    const id = setInterval(refrescar, 10000);
+    const onFocus = () => refrescar();
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(id); window.removeEventListener('focus', onFocus); };
+  }, []);
+  useEffect(() => { window.__store = { get: () => ref.current, act, Domain, reset, refrescar }; });
 
   const clients = state.users.filter((u) => u.role === 'CLIENTE');
   const staff = state.users.filter((u) => u.role !== 'CLIENTE');
@@ -1177,10 +1200,7 @@ function App() {
         </div>
         <div className="border-t border-slate-100 dark:border-slate-800">
           <div className="mx-auto max-w-7xl px-4 py-2 flex flex-wrap items-center gap-2 text-sm">
-            <span className="inline-flex items-center gap-1.5 font-medium"><Icon name="clock" />Reloj simulado:<span className="">{fmtDT(state.now)}</span></span>
-            {[['+1 min', MIN], ['+15 min', 15 * MIN], ['+1 h', HOUR], ['+1 día', DAY]].map(([l, ms]) => (
-              <button key={l} className={btnGhost} onClick={() => act(Domain.advanceClock, { ms })}>{l}</button>
-            ))}
+            <span className="inline-flex items-center gap-1.5 font-medium"><Icon name="clock" />Hora actual:<span className="">{fmtDT(state.now)}</span></span>
             <span className="ml-auto flex items-center gap-2">
               <button className={btnGhost} onClick={() => setInbox(true)}><Icon name="mail" />Bandeja{pendingEmails ? ` (${pendingEmails} pend.)` : ''}</button>
               <button className={btnGhost} onClick={reset}><Icon name="rotate" />Reiniciar datos</button>
@@ -1189,6 +1209,11 @@ function App() {
         </div>
       </header>
       <main className="mx-auto max-w-7xl px-4 py-6">
+        {state.apiEstado === 'error' && (
+          <div className="mb-4"><Notice tone="error" icon="alert">
+            <b className="font-mono">{state.apiError.code}</b> · {state.apiError.message} Los turnos no se pueden cargar ni modificar hasta que el backend responda.
+          </Notice></div>
+        )}
         {view === 'cliente' ? <ClientView key={clientId} /> : <AdminView key={adminId} />}
       </main>
       {inbox && <InboxDrawer onClose={() => setInbox(false)} mode={view} actorUser={actorUser} clientId={clientId} />}
