@@ -1,10 +1,10 @@
-"""Backend de Turnos Pro — Capa 2 (FastAPI, puerto 8000). Contrato: spec.md §11.
+"""Backend de Turnos Pro — Capa 2 (FastAPI, puerto configurable, 8012 por defecto en desarrollo). Contrato: spec.md §11.
 
 Arranque (desde la carpeta backend/):
 
-    uvicorn main:app --reload --port 8000
+    uvicorn main:app --reload --port 8012
 
-Swagger UI: http://localhost:8000/docs
+Swagger UI: http://localhost:8012/docs
 
 Solo expone los 3 endpoints del contrato. Las reglas viven en `dominio.py`; el acceso a SQLite, en `db.py`.
 """
