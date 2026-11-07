@@ -35,7 +35,7 @@ flowchart LR
     subgraph C1["Capa 1 · Frontend"]
         F["index.html<br/>React + Tailwind (CDN)<br/>catálogo mock local"]
     end
-    subgraph C2["Capa 2 · Backend · puerto 8000"]
+    subgraph C2["Capa 2 · Backend · puerto configurable"]
         A["FastAPI + CORS<br/>reglas INV-01, INV-02, RN-03, RN-04"]
     end
     subgraph C3["Capa 3 · Persistencia"]
@@ -48,14 +48,14 @@ flowchart LR
 ### 3.1 Capa 1 — Frontend (`index.html`)
 
 - Es el mismo `index.html` de la Fase 1, modificado **en el lugar**: no se crea otro archivo de frontend. La versión conceptual v1 (todo en memoria) queda disponible en el historial de git (commit `7d148be`).
-- Para los turnos consume **solo** el contrato de [spec.md §11](spec.md) con `fetch` y JSON sobre HTTP, contra `http://localhost:8000`.
+- Para los turnos consume **solo** el contrato de [spec.md §11](spec.md) con `fetch` y JSON sobre HTTP, contra la URL base configurable del backend (por defecto `http://localhost:8012` en desarrollo).
 - Los turnos ya no tienen su fuente de verdad en el navegador: la pantalla no decide si algo está permitido, muestra el código de error que devuelve el backend (`SLOT_UNAVAILABLE`, `CANCELLATION_WINDOW_EXPIRED`, etc.).
 - **Datos mock locales (decisión D-08, aprobada):** el catálogo de servicios, los profesionales y los horarios siguen siendo datos mock dentro del HTML, con los mismos `id` que la carga inicial de la base de datos. La grilla de slots se calcula con esos datos y con `GET /api/turnos`, y el backend siempre revalida.
 - Todo lo que el contrato no cubre (bloqueos, métricas, auditoría, servicios, emails, completar y marcar ausente) sigue siendo mock local y **no persiste**. Esas funciones no deben modificar los turnos que vienen de la API.
 
-### 3.2 Capa 2 — Backend (Python + FastAPI, puerto 8000)
+### 3.2 Capa 2 — Backend (Python + FastAPI, puerto configurable)
 
-- Aplicación FastAPI servida con `uvicorn` en el **puerto 8000**.
+- Aplicación FastAPI servida con `uvicorn` en un **puerto configurable** (el puerto no forma parte del contrato, spec §11.2; en desarrollo se usa cualquier puerto libre, por defecto 8012).
 - **CORS habilitado** con `CORSMiddleware`. Como el frontend puede abrirse con doble clic (`file://`, origen `null`) y la API no usa cookies ni credenciales, en desarrollo se permiten todos los orígenes (`allow_origins=["*"]`). Es una decisión solo para desarrollo local; para producción se restringe al origen real.
 - Implementa los 3 endpoints del contrato y el dominio en Python: INV-01 (`canClientCancel`), INV-02 (solapamiento `[inicio, fin)`), RN-03, RN-04 y RN-06. Es una traducción de las funciones puras que ya existen en el bloque `domain/` de `index.html`.
 - `ahora` es un parámetro del dominio (el endpoint lo toma del reloj real en UTC), de modo que las pruebas puedan inyectar cualquier instante (D-09).
@@ -165,7 +165,7 @@ Orden de construcción. Las fases se llaman **B0 a B6** (la «Fase 2» del curso
 
 | Fase | Entrega | Hecho cuando |
 |---|---|---|
-| B0 | Preparación: carpeta `backend/`, `requirements.txt`, entorno virtual, `.gitignore` con `turnos.db` | `uvicorn` arranca una app vacía en el puerto 8000 |
+| B0 | Preparación: carpeta `backend/`, `requirements.txt`, entorno virtual, `.gitignore` con `turnos.db` | `uvicorn` arranca una app vacía en un puerto libre |
 | B1 | `schema.sql` con las 6 tablas de §4.1, `CHECK`, claves foráneas y trigger; `seed.py` | Se genera `turnos.db` y el criterio 13 pasa con un `INSERT` directo |
 | B2 | `dominio.py` con INV-01, INV-02, RN-03, RN-04 y RN-06, con `ahora` inyectable | Las pruebas unitarias reproducen los casos de la autoverificación de `index.html` |
 | B3 | `db.py` y transacciones `BEGIN IMMEDIATE`; `main.py` con los 3 endpoints y CORS | Los errores devuelven los códigos y HTTP de spec §7; el criterio 10 (atomicidad) pasa |

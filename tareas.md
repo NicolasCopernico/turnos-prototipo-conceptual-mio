@@ -168,7 +168,7 @@ F4 y F5 pueden avanzar en paralelo una vez cerrada la Fase 3, porque ambas consu
 
 Base: [plan.md](plan.md) v2.0.1 y [spec.md](spec.md) v0.2.1 (INV-03, §11, criterios 9 a 13, decisiones D-06 a D-09).
 
-**Ramas:** el código del backend (`backend/`) se desarrolla en la rama `backend`; la documentación (`spec.md`, `plan.md`, `tareas.md`, `README.md`) y `index.html` continúan en `main`. Las tareas marcadas `[x]` de B0 a B3 corresponden a código que está en la rama `backend`.
+**Ramas:** el código del backend (`backend/`) se desarrolla en la rama `backend`; la documentación (`spec.md`, `plan.md`, `tareas.md`, `README.md`) y `index.html` continúan en `main`. Para probar el frontend contra la API hay que tener el backend levantado desde esa rama. Las tareas marcadas `[x]` de B0 a B3 corresponden a código que está en la rama `backend`.
 
 **Reglas de trabajo de esta parte:**
 - **Grounding:** no se crean tablas, campos, endpoints ni códigos de error que no estén en spec §4.1, §7 y §11 (plan §7).
@@ -194,12 +194,12 @@ Base: [plan.md](plan.md) v2.0.1 y [spec.md](spec.md) v0.2.1 (INV-03, §11, crite
 - [x] B0.2 Crear `backend/requirements.txt` con `fastapi`, `uvicorn` y `pytest`, y un entorno virtual local fuera del control de versiones.
 - [x] B0.3 Agregar `turnos.db` y el entorno virtual al `.gitignore`.
 - [x] B0.4 Definir las constantes de configuración del spec en un solo lugar: `CANCELLATION_WINDOW_HOURS = 2`, antelación 1 h, horizonte 60 días, grilla 15 min.
-- [ ] B0.5 Hacer un inventario de `index.html`: qué funciones y vistas tocan turnos (reservar, cancelar, completar, ausente, bloqueo con cancelación en cascada) y cuáles quedan como mock local.
+- [x] B0.5 Hacer un inventario de `index.html`: qué funciones y vistas tocan turnos (reservar, cancelar, completar, ausente, bloqueo con cancelación en cascada) y cuáles quedan como mock local. _(Inventario: tocan turnos reservar y cancelar (ahora por API); completar, ausente y bloqueo con cancelación en cascada quedan fuera del contrato; catálogo, horarios, bloqueos, emails, auditoría y métricas siguen como mock local)_
 - [x] B0.6 Definir la zona horaria de operación (spec §1.4) como configuración: variable `ZONA_HORARIA`, por defecto `America/Argentina/Buenos_Aires`. Se usa solo para interpretar `HorarioLaboral`; todos los instantes se guardan en UTC.
-- [x] B0.7 Documentar el comando de arranque con recarga automática (`uvicorn main:app --reload --port 8000`, ejecutado desde `backend/`) y la URL de Swagger UI (`http://localhost:8000/docs`).
+- [x] B0.7 Documentar el comando de arranque con recarga automática (`uvicorn main:app --reload --port 8012`, ejecutado desde `backend/`) y la URL de Swagger UI (`http://localhost:8012/docs`). _(El puerto es configurable; ver spec §11.2.)_
 
 **Salida:** esqueleto del backend y lista de cambios previstos en `index.html`.
-**Hecho cuando:** `uvicorn` arranca una app vacía en el puerto 8000. _(Falta B0.5, el inventario de `index.html`.)_
+**Hecho cuando:** `uvicorn` arranca una app vacía en un puerto libre. _(Falta B0.5, el inventario de `index.html`.)_
 
 ---
 
@@ -241,10 +241,10 @@ Base: [plan.md](plan.md) v2.0.1 y [spec.md](spec.md) v0.2.1 (INV-03, §11, crite
 - [x] B3.3 `POST /api/turnos` con el orden de evaluación de spec §11.4: existencia (404), contacto (422/403), tiempo (422), disponibilidad (409). Inserta el `Turno` y el `AuditoriaEvento` `TURNO_CREADO` en la misma transacción.
 - [x] B3.4 `POST /api/turnos/{id}/cancelar`: acceso (404), estado (409), ventana INV-01 para el cliente (409), motivo obligatorio para `PROFESIONAL`/`ADMIN` (`422` sin código de dominio, D-07). Actualiza el `Turno` e inserta `TURNO_CANCELADO` en la misma transacción.
 - [x] B3.5 Traducir los errores a `{"error": "<CÓDIGO>", "mensaje": "…"}` con el HTTP del catálogo de spec §7; la violación del *trigger* se traduce a `SLOT_UNAVAILABLE`; un fallo de persistencia responde `500` sin persistir nada.
-- [x] B3.6 CORS con `CORSMiddleware` (`allow_origins=["*"]`, solo para desarrollo, sin credenciales) y servidor en el puerto 8000.
+- [x] B3.6 CORS con `CORSMiddleware` (`allow_origins=["*"]`, solo para desarrollo, sin credenciales) y servidor en un puerto configurable.
 - [x] B3.7 Pruebas de la API con el cliente de prueba de FastAPI y una base de datos en archivo temporal: criterios 1 a 7, 10, 11 y 12 (más 9 y 13 en B5). _(Criterio 8: no aplica a la Fase 2, porque crear bloqueos no tiene endpoint en spec §11. Se cubre en la Parte A.)_ Resultado: 33 pruebas en `backend/tests/` pasan.
 - [x] B3.8 Tipado estricto: anotaciones en todo el backend, modelos Pydantic para la entrada y la salida, y `mypy --strict` sin errores.
-- [ ] B3.9 Verificar los 3 endpoints en vivo en Swagger UI (`http://localhost:8000/docs`) con los datos de `seed.py`. _(Verificado por HTTP con `curl`, pero en el puerto 8765: en esta máquina el 8000 estaba ocupado por otro proceso. Falta probarlo a mano en el navegador.)_
+- [ ] B3.9 Verificar los 3 endpoints en vivo en Swagger UI (`http://localhost:PUERTO/docs`) con los datos de `seed.py`. _(Verificado por HTTP con `curl`, pero en el puerto 8765: en esta máquina el 8000 estaba ocupado por otro proceso. Falta probarlo a mano en el navegador.)_
 
 **Salida:** backend funcional con los 3 endpoints.
 **Hecho cuando:** las pruebas de B3.7 pasan y ningún endpoint, campo ni código de error excede spec §11 y §7.
@@ -253,18 +253,18 @@ Base: [plan.md](plan.md) v2.0.1 y [spec.md](spec.md) v0.2.1 (INV-03, §11, crite
 
 ## Fase B4 — Capa 1: `index.html` consume la API
 
-- [ ] B4.1 Definir en `index.html` la URL base `http://localhost:8000` en una sola constante.
-- [ ] B4.2 Reemplazar la fuente de verdad de los turnos: cargar con `GET /api/turnos` al iniciar y después de cada escritura.
-- [ ] B4.3 Reserva: el modal de confirmación llama a `POST /api/turnos` con `cliente_id`, `servicio_id` e `inicio`; no envía `fin` ni `profesional_id`.
-- [ ] B4.4 Cancelación: el cliente y el Administrador llaman a `POST /api/turnos/{id}/cancelar` con `actor_id` y, cuando corresponde, `motivo_cancelacion`.
-- [ ] B4.5 Mostrar los errores del backend con su código (`SLOT_UNAVAILABLE`, `CANCELLATION_WINDOW_EXPIRED`, `INVALID_CONTACT`, `EMAIL_NOT_VERIFIED`, `INVALID_TIME_RANGE`, `NOT_FOUND`, `INVALID_STATE_TRANSITION`) y un mensaje claro si el backend no responde.
-- [ ] B4.6 Mantener el botón deshabilitado durante el envío para evitar el doble clic (ERR-02.3).
-- [ ] B4.7 Conservar como mock local el catálogo, los profesionales y los horarios, con los mismos `id` que `seed.py` (D-08).
-- [ ] B4.8 Según el inventario de B0.5: dejar como mock local lo que el contrato no cubre y evitar que modifique turnos de la API; las acciones que mutarían turnos fuera del contrato (completar, ausente, bloqueo con cancelación en cascada) se deshabilitan en la UI con un aviso. _(Criterio a confirmar al llegar a esta tarea.)_
-- [ ] B4.9 Retirar del flujo de turnos el reloj simulado (D-09) y quitar el código muerto; la UI no debe contener reglas de negocio.
+- [x] B4.1 Definir en `index.html` la URL base del backend en una sola constante. _(constante `API_BASE`, por defecto `http://localhost:8012`, sobrescribible con `?api=`)_
+- [x] B4.2 Reemplazar la fuente de verdad de los turnos: cargar con `GET /api/turnos` al iniciar y después de cada escritura. _(`cargarTurnos()` + relectura cada 10 s, al volver a la ventana y tras cada escritura; se eliminó el arreglo `turnos` en memoria)_
+- [x] B4.3 Reserva: el modal de confirmación llama a `POST /api/turnos` con `cliente_id`, `servicio_id` e `inicio`; no envía `fin` ni `profesional_id`.
+- [x] B4.4 Cancelación: el cliente y el Administrador llaman a `POST /api/turnos/{id}/cancelar` con `actor_id` y, cuando corresponde, `motivo_cancelacion`.
+- [x] B4.5 Mostrar los errores del backend con su código (`SLOT_UNAVAILABLE`, `CANCELLATION_WINDOW_EXPIRED`, `INVALID_CONTACT`, `EMAIL_NOT_VERIFIED`, `INVALID_TIME_RANGE`, `NOT_FOUND`, `INVALID_STATE_TRANSITION`) y un mensaje claro si el backend no responde. _(los errores del backend se muestran en el toast y en el aviso del modal; sin backend aparece `API_UNAVAILABLE`)_
+- [x] B4.6 Mantener el botón deshabilitado durante el envío para evitar el doble clic (ERR-02.3). _(guarda con `useRef`, porque el estado de React no alcanza para frenar dos clics seguidos)_
+- [x] B4.7 Conservar como mock local el catálogo, los profesionales y los horarios, con los mismos `id` que `seed.py` (D-08). _(ids de `seed.py` en `ID`; los bloqueos de ejemplo se alinearon con los del seed)_
+- [x] B4.8 Según el inventario de B0.5: dejar como mock local lo que el contrato no cubre y evitar que modifique turnos de la API; las acciones que mutarían turnos fuera del contrato (completar, ausente, bloqueo con cancelación en cascada) se deshabilitan en la UI con un aviso. _(Criterio a confirmar al llegar a esta tarea.)_ _(decisión: los botones siguen visibles y, al usarlos, devuelven `NOT_IMPLEMENTED` (501, código solo del frontend) en lugar de deshabilitarse; así no se toca la estructura visual. También `verifyEmail`)_
+- [ ] B4.9 Retirar del flujo de turnos el reloj simulado (D-09) y quitar el código muerto; la UI no debe contener reglas de negocio. _(Parcial: se retiró el reloj simulado —botones y `advanceClock`— y el código muerto `loadTurno` y `closeAppointment`. Falta decidir qué hacer con el modal de confirmación de bloqueos con conflicto en `AdminBlocks`, que ahora es inalcanzable; se dejó para no tocar la estructura visual.)_
 
 **Salida:** el flujo reservar → «Mis turnos» → cancelar funciona contra el backend.
-**Hecho cuando:** recargar la página conserva los turnos creados y la consola no muestra errores.
+**Hecho cuando:** recargar la página conserva los turnos creados y la consola no muestra errores. _(Verificado en Chrome contra el backend: 18 comprobaciones, entre ellas reservar, F5, conflicto 409 y cancelación fuera de ventana. B4.9 queda abierta por el punto de arriba.)_
 
 ---
 

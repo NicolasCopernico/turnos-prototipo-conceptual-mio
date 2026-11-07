@@ -437,7 +437,7 @@ Este contrato gobierna el backend. El frontend NO DEBE depender de nada que no e
 
 | Aspecto | Definición |
 |---|---|
-| URL base | `http://localhost:8000` |
+| URL base | Configurable. El puerto no forma parte del contrato; en desarrollo se usa cualquier puerto libre (el frontend apunta por defecto a `http://localhost:8012`). |
 | Formato | JSON, UTF-8. `Content-Type: application/json`. |
 | Nombres de campo | Exactamente los de §4.1 (`snake_case`, en español). |
 | Identificadores | UUID en texto, generados por el servidor. |

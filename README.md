@@ -187,11 +187,13 @@ Genera un readme explicando que este codigo forma parte del curso "Creá tu proy
 
 ## Cómo probarlo
 
-Abrí [index.html](index.html) y seguí [guia-de-uso.md](guia-de-uso.md). Tres pruebas para empezar:
+**Con el backend (Fase 2).** Los turnos se leen y se guardan en SQLite, así que `index.html` necesita el backend levantado (ver [Fase 2](#fase-2--backend-con-persistencia-real-en-construcción)). Abrí [index.html](index.html) (con `?api=http://localhost:PUERTO` si levantaste el backend en un puerto distinto del 8012) y probá:
 
-1. **Reserva:** Vista Cliente, usuaria Lucía, elegí un servicio y un horario libre, y confirmá. Después mirá la Vista Administrador: el turno ya está en la agenda.
-2. **Regla de las 2 horas:** pulsá `+1 min` en el reloj simulado y probá cancelar el turno de las 09:30. Con **Modo auditoría** activado, el dominio lo rechaza con `CANCELLATION_WINDOW_EXPIRED`.
-3. **Doble reserva:** en el modal de reserva, activá la simulación de otro cliente en el mismo instante. Queda un solo turno.
+1. **Reserva y persistencia:** Vista Cliente, usuaria Lucía, elegí un servicio, un día y un horario libre, y confirmá. Recargá la página con F5: el turno sigue ahí, porque se leyó de la base de datos.
+2. **Regla de las 2 horas (INV-01):** activá **Modo auditoría** y probá cancelar el turno de *Asesoría nutricional* de Lucía, que empieza dentro de las 2 horas posteriores a la carga inicial. El backend responde `409 CANCELLATION_WINDOW_EXPIRED` y la pantalla muestra su mensaje.
+3. **Doble reserva (INV-02):** en el modal de reserva, desplegá *Simulaciones de auditoría* y activá la del otro cliente. Ese cliente reserva primero (de verdad, en la base) y a vos el backend te responde `409 SLOT_UNAVAILABLE`.
+
+La [guía de uso](guia-de-uso.md) describe la versión de la Fase 1 (todo en memoria y con reloj simulado); ver el aviso al comienzo de ese archivo.
 
 ## Límites conocidos
 
@@ -210,24 +212,42 @@ Abrí [index.html](index.html) y seguí [guia-de-uso.md](guia-de-uso.md). Tres p
 
 La Fase 2 del curso separa el proyecto en **3 capas**: el frontend (`index.html`), un backend en Python con FastAPI y una base de datos SQLite (`turnos.db`). La arquitectura está en [plan.md](plan.md) y el contrato, en [spec.md](spec.md) §11. El avance está en la Parte B de [tareas.md](tareas.md).
 
-**El código del backend vive en la rama `backend`**, separada de `main`. En `main` quedan la documentación (spec, plan, tareas, README) y el frontend. Para usar el backend:
+**El código del backend vive en la rama `backend`**, separada de `main`. En `main` quedan la documentación (spec, plan, tareas, README) y el frontend, y la carpeta `backend/` **no tiene los archivos del servidor** (por eso `uvicorn main:app` falla con `Could not import module "main"` si lo corrés ahí). Para usar el backend sin dejar la rama `main`, creá una segunda carpeta de trabajo con la rama `backend`:
 
 ```bash
-git switch backend
+git worktree add ../turnos-backend backend
+cd ../turnos-backend/backend
 ```
 
-Las instrucciones de esta sección se ejecutan sobre esa rama. Cuando la Fase 2 esté completa, `backend` se integra en `main`.
+Esa carpeta no incluye el entorno virtual (`.venv` está en el `.gitignore`), así que hay que crearlo ahí (ver [Instalación](#instalación-una-sola-vez)). Las instrucciones de esta sección se ejecutan desde `turnos-backend/backend/`, y el frontend se abre desde la carpeta de `main`. Si preferís trabajar en una sola carpeta, `git switch backend` también sirve, pero entonces el `index.html` que ves es el de esa rama. Cuando la Fase 2 esté completa, `backend` se integra en `main`.
 
-**Estado actual:** el backend funciona y está probado, pero `index.html` **todavía no lo usa**. Sigue guardando todo en memoria (tarea B4 pendiente). Hoy el backend se prueba con Swagger UI, `curl` o `pytest`.
+**Estado actual:** `index.html` ya consume el backend para los turnos (tarea B4): lista, reserva y cancela con `fetch` a la API, y los datos sobreviven a F5. Se puede probar también con Swagger UI, `curl` o `pytest`.
+
+**Qué es real y qué sigue siendo de ejemplo en `index.html`:**
+
+| Real (API y SQLite) | De ejemplo (datos locales, no persisten) |
+|---|---|
+| Lista de turnos, reservar y cancelar. Los errores 409 se muestran con el motivo que devuelve el backend. | Catálogo de servicios, horarios, bloqueos, bandeja de emails, auditoría y métricas. |
+| La hora actual es la real: el reloj simulado se retiró. | Completar, marcar ausente, verificar email y bloquear un rango con turnos: muestran `NOT_IMPLEMENTED`, porque el contrato de la Fase 2 no tiene esos endpoints. |
+
+Los cambios que hagas en el formulario de contacto de la reserva no se guardan: el contrato no permite editar usuarios. El backend usa los datos de contacto que tiene en la base.
 
 ### Puertos
 
 | Puerto | Cuándo |
 |---|---|
-| **8000** | Es el puerto del contrato (spec §11.2 y plan §3.2). Usalo por defecto, en todos los ejemplos de la documentación. |
-| Otro (por ejemplo **8012**) | Solo si el 8000 está ocupado en tu equipo (`Address already in use`). Cambiá el número de `--port` y la URL de Swagger UI. |
+| **8012** | Es el puerto que usan por defecto el frontend y todos los ejemplos de esta documentación. |
+| Cualquier otro puerto libre (por ejemplo **8000**) | Si el 8012 está ocupado en tu equipo (`Address already in use`). Cambiá el número de `--port`, la URL de Swagger UI y abrí el frontend con `?api=`. |
 
-Si usás un puerto distinto del 8000, el frontend también tiene que apuntar a él: cuando se conecte `index.html` (tarea B4.1), la URL base del backend va en una sola constante. El CORS no necesita cambios.
+El puerto no forma parte del contrato (spec §11.2): lo que el contrato fija son las rutas, los cuerpos y los códigos de error. En producción la URL base será la del dominio del backend (detrás de un proxy inverso), no un puerto de `localhost`.
+
+**El frontend apunta por defecto al puerto 8012.** `index.html` define la URL del backend en una sola constante (`API_BASE`). Si levantás el backend en otro puerto, abrí la página con el parámetro `?api=`, sin editar el archivo:
+
+```
+index.html?api=http://localhost:8000   # ejemplo: backend en el puerto 8000
+```
+
+El CORS no necesita cambios. Para usar siempre otro puerto, alcanza con abrir la página con ese parámetro o con cambiar el valor por defecto de `API_BASE`.
 
 ### Instalación (una sola vez)
 
@@ -243,12 +263,12 @@ python3 -m venv .venv
 
 ```bash
 cd backend
-.venv/bin/uvicorn main:app --reload --port 8000
+.venv/bin/uvicorn main:app --reload --port 8012
 ```
 
 - `--reload` reinicia el servidor al guardar cambios en los `.py`.
 - Al arrancar crea `turnos.db` en la raíz del proyecto (con las 6 tablas de [spec.md](spec.md) §4.1) y la llena con los datos de ejemplo **solo si está vacía**. Los datos sobreviven a los reinicios.
-- **Swagger UI (probar los endpoints):** <http://localhost:8000/docs>
+- **Swagger UI (probar los endpoints):** <http://localhost:8012/docs>
 - Para empezar de cero: detené el servidor, borrá `turnos.db` y volvé a arrancar, o ejecutá `cd backend && .venv/bin/python seed.py --reiniciar`.
 
 ### Endpoints
@@ -263,19 +283,19 @@ Los errores de dominio responden `{"error": "<CÓDIGO>", "mensaje": "…"}` con 
 
 ### Probarlo con datos de ejemplo
 
-Los identificadores de la carga inicial son fijos. Con el servidor en el puerto 8000:
+Los identificadores de la carga inicial son fijos. Con el servidor en el puerto 8012:
 
 ```bash
 # Listar turnos
-curl http://localhost:8000/api/turnos
+curl http://localhost:8012/api/turnos
 
 # Cancelar el turno que empieza ~3 h después de la carga (cliente Sofía): 200
-curl -X POST http://localhost:8000/api/turnos/00000000-0000-4000-8000-000000000109/cancelar \
+curl -X POST http://localhost:8012/api/turnos/00000000-0000-4000-8000-000000000109/cancelar \
   -H 'content-type: application/json' \
   -d '{"actor_id": "00000000-0000-4000-8000-000000000023"}'
 
 # Cancelar el turno que empieza ~1 h 59 min después de la carga (cliente Lucía): 409 CANCELLATION_WINDOW_EXPIRED
-curl -X POST http://localhost:8000/api/turnos/00000000-0000-4000-8000-000000000108/cancelar \
+curl -X POST http://localhost:8012/api/turnos/00000000-0000-4000-8000-000000000108/cancelar \
   -H 'content-type: application/json' \
   -d '{"actor_id": "00000000-0000-4000-8000-000000000021"}'
 ```
@@ -317,3 +337,8 @@ Las pruebas usan una base de datos temporal y no tocan `turnos.db`.
 - El servidor usa el reloj real, no el reloj simulado del prototipo (spec D-09).
 - CORS abierto a cualquier origen: es solo para desarrollo local.
 - El `password_hash` de los usuarios de ejemplo no es verificable porque el inicio de sesión queda fuera de esta fase.
+
+
+-------------------------------------------------------------------------------------
+cd ~/proyectos/Crea_tu_proyecto_con_ia/clase_04/turnos-backend/backend
+~/proyectos/Crea_tu_proyecto_con_ia/clase_04/turnos-prototipo-conceptual/backend/.venv/bin/uvicorn main:app --reload --port 8012

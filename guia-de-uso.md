@@ -7,6 +7,17 @@
 | Base normativa | [spec.md](spec.md) · [historias-de-usuario.md](historias-de-usuario.md) |
 | Requiere | Internet (React y Tailwind se cargan desde CDN). Todo el estado vive en memoria. |
 
+> **Aviso (Fase 2).** Esta guía describe la versión de la **Fase 1**, con todo en memoria y reloj simulado. Desde la Fase 2 `index.html` guarda los turnos en SQLite a través del backend, y cambia lo siguiente:
+>
+> - **Requiere el backend levantado** (ver el [README](README.md#fase-2--backend-con-persistencia-real-en-construcción)). Sin él, la página muestra el aviso `API_UNAVAILABLE`.
+> - **El reloj simulado ya no existe:** los botones `+1 min`, `+15 min`, `+1 h` y `+1 día` se retiraron y la barra muestra la *hora actual*. Las pruebas de esta guía que dependen de avanzar el reloj (por ejemplo las que usan `+1 min` o `+1 h`) **no se pueden hacer** en la interfaz.
+> - **Los turnos de ejemplo cambiaron:** vienen del `seed.py` del backend y sus horarios son relativos al momento de la carga inicial, no a las 07:30.
+> - **Reiniciar datos** solo reinicia lo local (emails, auditoría, bloqueos y servicios de ejemplo). Los turnos no se borran.
+> - **Completar, Ausente, verificar email y bloquear un rango que tiene turnos** responden `NOT_IMPLEMENTED`: el contrato de la Fase 2 no tiene esos endpoints.
+> - **Reservar y cancelar** funcionan contra la API y recargar con F5 conserva los datos. Los rechazos (`SLOT_UNAVAILABLE`, `CANCELLATION_WINDOW_EXPIRED`, etc.) vienen del backend.
+>
+> La guía se reescribirá completa en la tarea B6.2 de [tareas.md](tareas.md).
+
 ---
 
 ## 1. Qué es y cómo funciona
